@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>S3 File Manager</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
+    <style>
+        body {
+            background-color: #f8f9fa;
+            padding-top: 2rem;
+        }
+        .upload-container {
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            padding: 2rem;
+            margin-bottom: 2rem;
+        }
+        .file-list {
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            padding: 1.5rem;
+        }
+        .file-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid #eee;
+            transition: background-color 0.2s;
+        }
+        .file-item:hover {
+            background-color: #f8f9fa;
+        }
+        .file-info {
+            flex-grow: 1;
+        }
+        .file-actions {
+            display: flex;
+            gap: 0.5rem;
+        }
+        .progress-bar {
+            height: 5px;
+            background: #e9ecef;
+            margin-top: 0.5rem;
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        .progress {
+            height: 100%;
+            background: #0d6efd;
+            width: 0%;
+            transition: width 0.3s;
+        }
+        .drag-area {
+            border: 2px dashed #0d6efd;
+            border-radius: 8px;
+            padding: 2rem;
+            text-align: center;
+            cursor: pointer;
+            margin-bottom: 1rem;
+            transition: background 0.2s;
+        }
+        .drag-area.active {
+            background: rgba(13, 110, 253, 0.1);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="text-center mb-4">
+            <h1 class="display-4">AWS S3 File Manager</h1>
+            <p class="lead">Upload and manage files in your S3 bucket</p>
+        </div>
+
+        <div class="upload-container">
+            <h2><i class="bi bi-cloud-arrow-up"></i> Upload Files</h2>
+            <div id="dragArea" class="drag-area">
+                <i class="bi bi-cloud-arrow-up" style="font-size: 2rem;"></i>
+                <p class="mt-2">Drag & drop files here or click to browse</p>
+                <input type="file" id="fileInput" class="d-none" multiple>
+            </div>
+            <button id="uploadBtn" class="btn btn-primary" disabled>
+                <span id="uploadText">Upload Files</span>
+                <span id="uploadSpinner" class="spinner-border spinner-border-sm d-none" role="status"></span>
+            </button>
+            <div class="progress-bar d-none" id="progressContainer">
+                <div class="progress" id="progressBar"></div>
+            </div>
+            <div id="uploadStatus" class="mt-2"></div>
+        </div>
+
+        <div class="file-list">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <h2><i class="bi bi-files"></i> Files in Bucket</h2>
+                <button id="refreshBtn" class="btn btn-outline-secondary">
+                    <i class="bi bi-arrow-clockwise"></i> Refresh
+                </button>
+            </div>
+            <div id="fileListContainer">
+                <div class="text-center py-4">
+                    <div class="spinner-border text-primary" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal for file preview -->
+    <div class="modal fade" id="fileModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="modalTitle">File Preview</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body text-center" id="modalContent">
+                    <img id="modalImage" src="" class="img-fluid" style="max-height: 70vh;" alt="Preview">
+                    <a id="downloadLink" href="#" class="btn btn-primary mt-3 d-none">
+                        <i class="bi bi-download"></i> Download
+                    </a>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                    <button type="button" class="btn btn-danger" id="deleteBtn">
+                        <i class="bi bi-trash"></i> Delete
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // DOM Elements
+        const dragArea = document.getElementById('dragArea');
+        const fileInput = document.getElementById('fileInput');
+        const uploadBtn = document.getElementById('uploadBtn');
+        const uploadText = document.getElementById('uploadText');
+        const uploadSpinner = document.getElementById('uploadSpinner');
+        const progressContainer = document.getElementById('progressContainer');
+        const progressBar = document.getElementById('progressBar');
+        const uploadStatus = document.getElementById('uploadStatus');
+        const fileListContainer = document.getElementById('fileListContainer');
+        const refreshBtn = document.getElementById('refreshBtn');
+        const fileModal = new bootstrap.Modal(document.getElementById('fileModal'));
+        const modalTitle = document.getElementById('modalTitle');
+        const modalImage = document.getElementById('modalImage');
+        const downloadLink = document.getElementById('downloadLink');
+        const deleteBtn = document.getElementById('deleteBtn');
+
+        // Current selected file for modal
+        let currentFileKey = null;
+
+        // Drag and drop functionality
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            dragArea.addEventListener(eventName, preventDefaults, false);
+        });
+
+        function preventDefaults(e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+
+        ['dragenter', 'dragover'].forEach(eventName => {
+            dragArea.addEventListener(eventName, highlight, false);
+        });
+
+        ['dragleave', 'drop'].forEach(eventName => {
+            dragArea.addEventListener(eventName, unhighlight, false);
+        });
+
+        function highlight() {
+            dragArea.classList.add('active');
+        }
+
+        function unhighlight() {
+            dragArea.classList.remove('active');
+        }
+
+        dragArea.addEventListener('drop', handleDrop, false);
+        dragArea.addEventListener('click', () => fileInput.click());
+
+        function handleDrop(e) {
+            const dt = e.dataTransfer;
+            const files = dt.files;
+            handleFiles(files);
+        }
+
+        fileInput.addEventListener('change', () => {
+            handleFiles(fileInput.files);
+        });
+
+        // Handle selected files
+        function handleFiles(files) {
+            if (files.length === 0) return;
+            
+            uploadBtn.disabled = false;
+            uploadStatus.innerHTML = `
+                <div class="alert alert-info">
+                    <i class="bi bi-info-circle"></i> ${files.length} file(s) selected ready for upload
+                </div>
+            `;
+        }
+
+        // Upload files
+        uploadBtn.addEventListener('click', async () => {
+            if (fileInput.files.length === 0) return;
+            
+            uploadBtn.disabled = true;
+            uploadText.classList.add('d-none');
+            uploadSpinner.classList.remove('d-none');
+            progressContainer.classList.remove('d-none');
+            
+            const files = Array.from(fileInput.files);
+            let successCount = 0;
+            
+            for (let i = 0; i < files.length; i++) {
+                const file = files[i];
+                const formData = new FormData();
+                formData.append('file', file);
+                
+                try {
+                    const response = await fetch('/api/upload', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    const data = await response.json();
+                    
+                    if (data.success) {
+                        successCount++;
+                        progressBar.style.width = `${((i + 1) / files.length) * 100}%`;
+                    }
+                } catch (error) {
+                    console.error('Upload error:', error);
+                }
+            }
+            
+            uploadText.classList.remove('d-none');
+            uploadSpinner.classList.add('d-none');
+            
+            if (successCount === files.length) {
+                uploadStatus.innerHTML = `
+                    <div class="alert alert-success">
+                        <i class="bi bi-check-circle"></i> All files uploaded successfully!
+                    </div>
+                `;
+            } else {
+                uploadStatus.innerHTML = `
+                    <div class="alert alert-warning">
+                        <i class="bi bi-exclamation-triangle"></i> 
+                        ${successCount} of ${files.length} files uploaded successfully
+                    </div>
+                `;
+            }
+            
+            fileInput.value = '';
+            uploadBtn.disabled = true;
+            setTimeout(() => {
+                progressContainer.classList.add('d-none');
+                progressBar.style.width = '0%';
+            }, 2000);
+            
+            fetchFileList();
+        });
+
+        // Fetch file list
+        async function fetchFileList() {
+            fileListContainer.innerHTML = `
+                <div class="text-center py-4">
+                    <div class="spinner-border text-primary" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                </div>
+            `;
+            
+            try {
+                const response = await fetch('/api/files');
+                const files = await response.json();
+                
+                if (files.length === 0) {
+                    fileListContainer.innerHTML = `
+                        <div class="text-center py-4 text-muted">
+                            <i class="bi bi-folder-x" style="font-size: 2rem;"></i>
+                            <p class="mt-2">No files found in the bucket</p>
+                        </div>
+                    `;
+                    return;
+                }
+                
+                let html = '';
+                files.forEach(file => {
+                    const fileSize = formatFileSize(file.size);
+                    const fileDate = new Date(file.lastModified).toLocaleString();
+                    const fileType = getFileType(file.key);
+                    
+                    html += `
+                        <div class="file-item" data-key="${file.key}">
+                            <div class="file-info">
+                                <div class="d-flex align-items-center">
+                                    <i class="bi ${getFileIcon(fileType)} me-2"></i>
+                                    <div>
+                                        <div class="fw-bold">${file.key}</div>
+                                        <small class="text-muted">${fileSize} • ${fileDate}</small>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="file-actions">
+                                <button class="btn btn-sm btn-outline-primary view-btn" data-url="${file.url}">
+                                    <i class="bi bi-eye"></i>
+                                </button>
+                                <a href="${file.url}" class="btn btn-sm btn-outline-success" download>
+                                    <i class="bi bi-download"></i>
+                                </a>
+                                <button class="btn btn-sm btn-outline-danger delete-btn" data-key="${file.key}">
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                            </div>
+                        </div>
+                    `;
+                });
+                
+                fileListContainer.innerHTML = html;
+                
+                // Add event listeners to buttons
+                document.querySelectorAll('.view-btn').forEach(btn => {
+                    btn.addEventListener('click', (e) => {
+                        const url = e.target.closest('.view-btn').dataset.url;
+                        const key = e.target.closest('.file-item').dataset.key;
+                        showFilePreview(url, key);
+                    });
+                });
+                
+                document.querySelectorAll('.delete-btn').forEach(btn => {
+                    btn.addEventListener('click', (e) => {
+                        const key = e.target.closest('.delete-btn').dataset.key;
+                        showDeleteConfirmation(key);
+                    });
+                });
+                
+            } catch (error) {
+                console.error('Error fetching files:', error);
+                fileListContainer.innerHTML = `
+                    <div class="alert alert-danger">
+                        <i class="bi bi-exclamation-octagon"></i> Failed to load files
+                    </div>
+                `;
+            }
+        }
+
+        // Show file preview in modal
+        function showFilePreview(url, key) {
+            currentFileKey = key;
+            const fileType = getFileType(key);
+            
+            modalTitle.textContent = key;
+            downloadLink.href = url;
+            downloadLink.classList.remove('d-none');
+            
+            if (['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(fileType)) {
+                modalImage.src = url;
+                modalImage.classList.remove('d-none');
+            } else {
+                modalImage.classList.add('d-none');
+                modalContent.innerHTML = `
+                    <div class="alert alert-info">
+                        <i class="bi bi-file-earmark"></i> 
+                        Preview not available for ${fileType.toUpperCase()} files
+                    </div>
+                `;
+            }
+            
+            fileModal.show();
+        }
+
+        // Show delete confirmation
+        function showDeleteConfirmation(key) {
+            if (confirm('Are you sure you want to delete this file?')) {
+                deleteFile(key);
+            }
+        }
+
+        // Delete file
+        async function deleteFile(key) {
+            try {
+                const response = await fetch(`/api/files/${encodeURIComponent(key)}`, {
+                    method: 'DELETE'
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    fetchFileList();
+                    if (fileModal._isShown && currentFileKey === key) {
+                        fileModal.hide();
+                    }
+                } else {
+                    alert('Failed to delete file');
+                }
+            } catch (error) {
+                console.error('Delete error:', error);
+                alert('Error deleting file');
+            }
+        }
+
+        // Delete button in modal
+        deleteBtn.addEventListener('click', () => {
+            if (currentFileKey) {
+                fileModal.hide();
+                deleteFile(currentFileKey);
+            }
+        });
+
+        // Helper functions
+        function formatFileSize(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2) + ' ' + sizes[i]);
+        }
+
+        function getFileType(filename) {
+            return filename.split('.').pop().toLowerCase();
+        }
+
+        function getFileIcon(fileType) {
+            const icons = {
+                image: 'bi-file-image',
+                pdf: 'bi-file-pdf',
+                word: 'bi-file-word',
+                excel: 'bi-file-excel',
+                powerpoint: 'bi-file-ppt',
+                audio: 'bi-file-music',
+                video: 'bi-file-play',
+                zip: 'bi-file-zip',
+                code: 'bi-file-code',
+                text: 'bi-file-text'
+            };
+            
+            if (['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(fileType)) {
+                return icons.image;
+            } else if (fileType === 'pdf') {
+                return icons.pdf;
+            } else if (['doc', 'docx'].includes(fileType)) {
+                return icons.word;
+            } else if (['xls', 'xlsx'].includes(fileType)) {
+                return icons.excel;
+            } else if (['ppt', 'pptx'].includes(fileType)) {
+                return icons.powerpoint;
+            } else if (['mp3', 'wav', 'ogg'].includes(fileType)) {
+                return icons.audio;
+            } else if (['mp4', 'mov', 'avi'].includes(fileType)) {
+                return icons.video;
+            } else if (['zip', 'rar', '7z'].includes(fileType)) {
+                return icons.zip;
+            } else if (['html', 'css', 'js', 'json', 'xml'].includes(fileType)) {
+                return icons.code;
+            } else if (['txt', 'md'].includes(fileType)) {
+                return icons.text;
+            } else {
+                return 'bi-file-earmark';
+            }
+        }
+
+        // Refresh button
+        refreshBtn.addEventListener('click', fetchFileList);
+
+        // Initial load
+        fetchFileList();
+    </script>
+</body>
+</html>
